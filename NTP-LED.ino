@@ -1,12 +1,3 @@
-#include <ESP8266WiFi.h>
-#include <NTPClient.h>
-#include <WiFiUdp.h>
-#include <Wire.h>
-#include <RTClib.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_LEDBackpack.h>
-#include "secrets.h"  // Include the secrets file
-
 // Timezone and DST Settings
 // Timezone and DST Settings
 // Timezone and DST Settings
@@ -22,6 +13,17 @@
 // 8 = CST (China Standard Time, UTC+8)
 // 9 = JST (Japan Standard Time, UTC+9)
 // 10 = AEST (Australian Eastern Standard Time, UTC+10)
+
+#include <ESP8266WiFi.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <Wire.h>
+#include <RTClib.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_LEDBackpack.h>
+#include "secrets.h"  // Include the secrets file
+
+// Timezone and DST Settings
 int timezoneSelection = 3;  // Set this number to your timezone (1-10)
 bool useDST = true;  // Set to true if DST should be used, false otherwise
 
@@ -60,18 +62,27 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org", timeOffset, 60000); // Sync time ev
 RTC_DS3231 rtc;
 Adafruit_7segment matrix = Adafruit_7segment();
 
+const int ledPin = LED_BUILTIN;  // Onboard LED pin
+
 // Time tracking
 DateTime lastSyncTime;
 const unsigned long syncInterval = 3600; // 1 hour in seconds
 DateTime lastRetryTime;
 const unsigned long retryInterval = 900; // 15 minutes in seconds
 bool firstLoop = true;  // Flag to track the first loop iteration
+bool errorOccurred = false;  // Flag to track if an error occurred
+bool wasConnected = false;  // Track the previous Wi-Fi state
 
 // Wi-Fi connection retry settings
 const int maxRetries = 15;
+unsigned long lastWiFiCheck = 0; // To track the last Wi-Fi check time
+const unsigned long wifiCheckInterval = 60000; // Check Wi-Fi every minute when disconnected
 
 void setup() {
   Serial.begin(115200);  // Start the serial communication
+
+  pinMode(ledPin, OUTPUT);  // Initialize the onboard LED pin
+  digitalWrite(ledPin, HIGH);  // Ensure the LED is off initially
 
   // Display selected timezone and DST setting
   Serial.println("Selected Timezone: " + String(timezoneNames[timezoneSelection - 1]));
@@ -129,14 +140,39 @@ void loop() {
     lastSyncTime = rtc.now();  // Reset the last sync time
   }
 
-  // If not connected to Wi-Fi, attempt to reconnect every 15 minutes
-  if (WiFi.status() != WL_CONNECTED && (now - lastRetryTime).totalseconds() >= retryInterval) {
-    connectToWiFi();
-    lastRetryTime = rtc.now();  // Reset the last retry time
+  // Check Wi-Fi connection status
+  if (WiFi.status() != WL_CONNECTED) {
+    if (!errorOccurred) {
+      // Print Wi-Fi loss information only once when disconnected
+      Serial.println("Wi-Fi disconnected at " + now.timestamp());
+      errorOccurred = true;
+    }
+    if (millis() - lastWiFiCheck >= wifiCheckInterval) {
+      lastWiFiCheck = millis();  // Update the last check time
+      connectToWiFi();  // Attempt to reconnect to Wi-Fi
+    }
+  } else {
+    if (errorOccurred || !wasConnected) {
+      // Print reconnection information when Wi-Fi reconnects
+      Serial.println("Wi-Fi connected at " + now.timestamp());
+      Serial.println("Connected to SSID: " + String(WiFi.SSID()));
+      Serial.println("Signal strength (RSSI): " + String(WiFi.RSSI()) + " dBm");
+      Serial.println("Local IP address: " + WiFi.localIP().toString());
+      errorOccurred = false;
+    }
   }
+  
+  wasConnected = (WiFi.status() == WL_CONNECTED);  // Update the Wi-Fi connection status
 
   // Display time on LED matrix
   displayTime(now.hour(), now.minute(), now.second());
+
+  // Blink the LED if an error occurred (i.e., Wi-Fi is disconnected)
+  if (errorOccurred) {
+    digitalWrite(ledPin, !digitalRead(ledPin));  // Toggle the LED state
+  } else {
+    digitalWrite(ledPin, HIGH);  // Turn off the LED if Wi-Fi is connected
+  }
 
   delay(1000);  // Update every second
 }
@@ -156,8 +192,11 @@ void connectToWiFi() {
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nConnected to WiFi");
+    errorOccurred = false;  // Clear the error flag
+    digitalWrite(ledPin, HIGH);  // Turn off the LED immediately after connecting
   } else {
     Serial.println("\nFailed to connect to WiFi. Running from RTC.");
+    errorOccurred = true;  // Set the error flag
   }
 }
 
@@ -175,11 +214,14 @@ void syncTimeWithNTP() {
       // Set RTC with NTP time
       rtc.adjust(ntpTime);
       Serial.println("RTC time successfully updated with NTP time.");
+      errorOccurred = false;  // Clear the error flag
     } else {
       Serial.println("Failed to retrieve time from NTP server.");
+      errorOccurred = true;  // Set the error flag
     }
   } else {
     Serial.println("Cannot sync with NTP. No Wi-Fi connection. Using RTC time.");
+    errorOccurred = true;  // Set the error flag
   }
 }
 
